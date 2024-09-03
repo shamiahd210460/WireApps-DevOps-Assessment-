@@ -1,111 +1,117 @@
 #!/bin/bash
 
+# Uninstall all conflicting packages
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do 
+    sudo apt-get remove -y $pkg
+done
+
+# Install prerequisites for Docker
+sudo apt-get install -y ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add Docker's repository to Apt sources
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+$(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
 # Update and upgrade the system
 sudo apt update && sudo apt upgrade -y
 
-# Install necessary packages
-sudo apt install -y docker.io docker-compose nginx python3-pip
 
-# Upgrade Docker Compose and Docker client to avoid compatibility issues
-sudo pip3 install docker-compose --upgrade
-sudo pip3 install docker --upgrade
+sudo add-apt-repository ppa:certbot/certbot
+# Install Docker, Nginx, Git, and other required tools
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin cifs-utils git nginx 
 
 # Start and enable Docker service
 sudo systemctl start docker
 sudo systemctl enable docker
 
-# Create a directory for the project
-mkdir -p ~/app/devops-challenge-apps-master
-cd ~/app/devops-challenge-apps-master
+# Start and enable Nginx service
+sudo systemctl start nginx
+sudo systemctl enable nginx
 
-# Create docker-compose.yml file
-cat << EOF > docker-compose.yml
-version: '3.8'
-services:
-  db:
-    image: postgres:12-alpine
-    restart: always
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-    ports:
-      - '5432:5432'
-    volumes: 
-      - db-12:/var/lib/postgresql/data
-  web:
-    image: web
-    links:
-      - api
-    build:
-      context: ./web
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-  api:
-    image: api
-    links:
-      - db
-    build:
-      context: ./api
-      dockerfile: Dockerfile
-    ports:
-      - "4000:4000"
-    
-volumes:
-  db-12:
-    driver: local
-EOF
+# Set the directory where the repository will be cloned
+repo_dir="WireApps-DevOps-Assessment-"
+repo_url="https://github.com/shamiahd210460/WireApps-DevOps-Assessment-.git"
 
-# Create Nginx configuration file for web service
-sudo tee /etc/nginx/sites-available/wireappsweb.ddns.net << EOF
+# If the directory already exists, remove it
+if [ -d "$repo_dir" ]; then
+    echo "Directory '$repo_dir' exists. Removing it..."
+    sudo rm -rf "$repo_dir"
+fi
+
+# Clone the repository
+if git clone "$repo_url"; then
+    echo "Repository cloned successfully."
+else
+    echo "Failed to clone the repository. Please check the URL or your network connection."
+    exit 1
+fi
+
+# Navigate to the repository directory
+cd "$repo_dir" || { echo "Directory not found!"; exit 1; }
+# Start Docker Compose services
+if ! sudo docker compose up -d; then
+    echo "Failed to start Docker Compose services."
+    exit 1
+fi
+
+# Set up variables for Nginx configuration
+webhost="wireappsweb.ddns.net"
+apihost="wireappsapi.ddns.net"
+
+# Create Nginx configuration file for the web service
+sudo tee /etc/nginx/sites-available/$webhost > /dev/null << EOF
 server {
-    listen 80;
-    server_name wireappsweb.ddns.net;
+    server_name $webhost;  
 
     location / {
         proxy_pass http://localhost:3000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     }
 }
 EOF
 
-# Create Nginx configuration file for API service
-sudo tee /etc/nginx/sites-available/wireappsapi.ddns.net << EOF
+# Create Nginx configuration file for the API service
+sudo tee /etc/nginx/sites-available/$apihost > /dev/null << EOF
 server {
-    listen 80;
-    server_name wireappsapi.ddns.net;
+    server_name $apihost;
 
     location / {
         proxy_pass http://localhost:4000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     }
 }
 EOF
 
-# Enable the Nginx configurations by creating symbolic links if they don't already exist
-if [ ! -L /etc/nginx/sites-enabled/wireappsweb.ddns.net ]; then
-    sudo ln -s /etc/nginx/sites-available/wireappsweb.ddns.net /etc/nginx/sites-enabled/
-fi
-
-if [ ! -L /etc/nginx/sites-enabled/wireappsapi.ddns.net ]; then
-    sudo ln -s /etc/nginx/sites-available/wireappsapi.ddns.net /etc/nginx/sites-enabled/
-fi
+# Enable the Nginx configurations
+sudo ln -s /etc/nginx/sites-available/$webhost /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/$apihost /etc/nginx/sites-enabled/
 
 # Remove the default Nginx configuration if it exists
 sudo rm -f /etc/nginx/sites-enabled/default
 
 # Test Nginx configuration
-sudo nginx -t
+if sudo nginx -t; then
+    echo "Nginx configuration is valid. Reloading Nginx..."
+    sudo systemctl reload nginx
+else
+    echo "Nginx configuration is invalid. Check the configuration file and try again."
+    exit 1
+fi
 
-# Reload Nginx to apply changes
-sudo systemctl reload nginx
 
-# Start Docker Compose services
-docker-compose up -d
-
-# Display the setup completion message
 echo "Setup complete. Your services should now be accessible through the Nginx reverse proxy."
-echo "Web service: http://wireappsweb.ddns.net/"
-echo "API service: http://wireappsapi.ddns.net/"
+
+
+
+echo "Web service: http://$webhost"
+echo "API service: http://$apihost"
