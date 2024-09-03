@@ -1,0 +1,111 @@
+#!/bin/bash
+
+# Update and upgrade the system
+sudo apt update && sudo apt upgrade -y
+
+# Install necessary packages
+sudo apt install -y docker.io docker-compose nginx python3-pip
+
+# Upgrade Docker Compose and Docker client to avoid compatibility issues
+sudo pip3 install docker-compose --upgrade
+sudo pip3 install docker --upgrade
+
+# Start and enable Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Create a directory for the project
+mkdir -p ~/app/devops-challenge-apps-master
+cd ~/app/devops-challenge-apps-master
+
+# Create docker-compose.yml file
+cat << EOF > docker-compose.yml
+version: '3.8'
+services:
+  db:
+    image: postgres:12-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - '5432:5432'
+    volumes: 
+      - db-12:/var/lib/postgresql/data
+  web:
+    image: web
+    links:
+      - api
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+  api:
+    image: api
+    links:
+      - db
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    
+volumes:
+  db-12:
+    driver: local
+EOF
+
+# Create Nginx configuration file for web service
+sudo tee /etc/nginx/sites-available/wireappsweb.ddns.net << EOF
+server {
+    listen 80;
+    server_name wireappsweb.ddns.net;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+EOF
+
+# Create Nginx configuration file for API service
+sudo tee /etc/nginx/sites-available/wireappsapi.ddns.net << EOF
+server {
+    listen 80;
+    server_name wireappsapi.ddns.net;
+
+    location / {
+        proxy_pass http://localhost:4000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+EOF
+
+# Enable the Nginx configurations by creating symbolic links if they don't already exist
+if [ ! -L /etc/nginx/sites-enabled/wireappsweb.ddns.net ]; then
+    sudo ln -s /etc/nginx/sites-available/wireappsweb.ddns.net /etc/nginx/sites-enabled/
+fi
+
+if [ ! -L /etc/nginx/sites-enabled/wireappsapi.ddns.net ]; then
+    sudo ln -s /etc/nginx/sites-available/wireappsapi.ddns.net /etc/nginx/sites-enabled/
+fi
+
+# Remove the default Nginx configuration if it exists
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# Test Nginx configuration
+sudo nginx -t
+
+# Reload Nginx to apply changes
+sudo systemctl reload nginx
+
+# Start Docker Compose services
+docker-compose up -d
+
+# Display the setup completion message
+echo "Setup complete. Your services should now be accessible through the Nginx reverse proxy."
+echo "Web service: http://wireappsweb.ddns.net/"
+echo "API service: http://wireappsapi.ddns.net/"
